@@ -2551,9 +2551,28 @@ read_edge_index() {
     git cat-file -p "$blob_hash" 2>/dev/null || echo ""
 }
 
-# write_edge_index <data> <expected>: like write_issue_data, the ref moves
-# only from <expected> (empty: the ref must not exist); GI_STALE otherwise.
-# Empty <data> deletes the index.
+# Change cursor for the edge index.  for-each-ref sorts by refname, so two
+# snapshots taken at different times compare as plain strings.
+current_ref_snapshot() {
+    git for-each-ref --format='%(refname) %(objectname)' 'refs/notes/issue-*' 2>/dev/null
+}
+
+# The snapshot stored with <commit>.  Empty on indexes written before the
+# snapshot existed, which reads as "everything changed" and rebuilds them
+# in full.
+read_ref_snapshot() {
+    local commit="$1"
+    [[ -z "$commit" ]] && { echo ""; return 0; }
+    git cat-file -p "$commit:refs" 2>/dev/null || echo ""
+}
+
+# write_edge_index <data> <expected> [snapshot]: like write_issue_data, the
+# ref moves only from <expected> (empty: the ref must not exist); GI_STALE
+# otherwise.  Empty <data> deletes the index.
+# The snapshot goes in a sibling blob because consumers read the edges blob
+# line by line and would treat metadata as edges.  Omitted, it is carried
+# forward from <expected>, so an edit that skipped the snapshot leaves its
+# issues to be re-parsed on the next read rather than marked current.
 write_edge_index() {
     local data="$1" expected="$2"
     if [[ -z "$data" ]]; then
@@ -2562,11 +2581,26 @@ write_edge_index() {
         return 0
     fi
 
+    local snapshot
+    if [[ $# -ge 3 ]]; then
+        snapshot="$3"
+    else
+        snapshot=$(read_ref_snapshot "$expected")
+    fi
+
     local blob_hash
     blob_hash=$(echo "$data" | git hash-object -w --stdin)
 
+    local snap_hash=""
+    if [[ -n "$snapshot" ]]; then
+        snap_hash=$(echo "$snapshot" | git hash-object -w --stdin)
+    fi
+
     local tree_hash
-    tree_hash=$(printf "100644 blob %s\tedges\n" "$blob_hash" | git mktree)
+    tree_hash=$({
+        printf "100644 blob %s\tedges\n" "$blob_hash"
+        [[ -n "$snap_hash" ]] && printf "100644 blob %s\trefs\n" "$snap_hash"
+    } | git mktree)
 
     local commit_hash
     if [[ -n "$expected" ]]; then
@@ -2630,6 +2664,10 @@ _rebuild_edge_index_once() {
     local timestamp
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     local edges="last_rebuilt_from: $timestamp"
+    # Taken before the headers are read: a note that moves mid-rebuild then
+    # differs from the snapshot and is re-parsed on the next read.
+    local snapshot
+    snapshot=$(current_ref_snapshot)
 
     for ref in $(list_all_issues); do
         local id
@@ -2680,7 +2718,7 @@ _rebuild_edge_index_once() {
         fi
     done
 
-    write_edge_index "$edges" "$base" || return $?
+    write_edge_index "$edges" "$base" "$snapshot" || return $?
     echo -e "${GREEN}Edge index rebuilt at $timestamp${NC}"
 }
 
@@ -2714,8 +2752,8 @@ _gi_reindex_edges() {
 }
 
 # gi_reindex_issues <id>...: re-derive exactly these issues' edges in the
-# index, e.g. after sync changed their headers (their commit dates can be
-# older than the index's marker, so ensure_edge_index_current would skip them)
+# index, e.g. after sync changed their headers, so the index is current
+# without waiting for the next ensure_edge_index_current
 gi_reindex_issues() {
     [[ $# -eq 0 ]] && return 0
     _edit_edge_index _gi_reindex_edges "$@"
@@ -2730,38 +2768,41 @@ ensure_edge_index_current() {
     base=$(_edge_commit)
     edge_data=$(read_edge_index "$base")
 
-    # Get the last rebuild timestamp from the index
-    local last_rebuilt
-    last_rebuilt=$(echo "$edge_data" | grep "^last_rebuilt_from:" | cut -d' ' -f2-)
+    # Object IDs rather than commit dates: a note arriving by fetch or import
+    # keeps the date it was written with, which can predate any local
+    # watermark, so a date cursor skips it permanently.
+    local stored current
+    stored=$(read_ref_snapshot "$base")
+    current=$(current_ref_snapshot)
 
-    # Find issue notes modified since last rebuild (single git call)
-    local needs_rebuild=false
+    [[ "$stored" == "$current" ]] && return 0
+
     local changed_ids=()
-
-    # Ref dates are rendered as UTC in the same format as the last_rebuilt_from
-    # marker (written by date -u below), so the two are directly comparable as
-    # strings.  Comparing a local-offset date (iso-strict) against a UTC marker
-    # silently misses edits by up to the local UTC offset.
-    # Note the >= comparison: a note committed in the same second as the marker
-    # must be treated as changed, since second granularity cannot order them.
-    while IFS=$'\t' read -r ref ref_date; do
+    local ref oid
+    while read -r ref oid; do
         [[ -z "$ref" ]] && continue
-        if [[ -z "$last_rebuilt" ]] || [[ ! "$ref_date" < "$last_rebuilt" ]]; then
-            local id="${ref#refs/notes/issue-}"
-            changed_ids+=("$id")
-            needs_rebuild=true
+        if ! grep -qxF "$ref $oid" <<< "$stored"; then
+            changed_ids+=("${ref#refs/notes/issue-}")
         fi
-    done < <(TZ=UTC git for-each-ref --format="%(refname)%09%(committerdate:format-local:%Y-%m-%dT%H:%M:%SZ)" 'refs/notes/issue-*' 2>/dev/null)
+    done <<< "$current"
 
-    if [[ "$needs_rebuild" == "true" ]]; then
-        # Re-parse only changed issues and update edges
+    # Deleted refs keep no headers to re-parse, so drop their edges here
+    while read -r ref oid; do
+        [[ -z "$ref" ]] && continue
+        if ! grep -q "^${ref} " <<< "$current"; then
+            local gone="${ref#refs/notes/issue-}"
+            edge_data=$(echo "$edge_data" | grep -v "^${gone} " || true)
+        fi
+    done <<< "$stored"
+
+    if [[ ${#changed_ids[@]} -gt 0 ]]; then
         edge_data=$(_gi_reindex_edges "$edge_data" "${changed_ids[@]}")
-
-        # Update marker and write
-        edge_data=$(echo "$edge_data" | grep -v "^last_rebuilt_from:" | grep -v "^$" || true)
-        edge_data="last_rebuilt_from: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"$'\n'"${edge_data}"
-        write_edge_index "$edge_data" "$base" || rebuild_edge_index >/dev/null
     fi
+
+    # Update marker and write
+    edge_data=$(echo "$edge_data" | grep -v "^last_rebuilt_from:" | grep -v "^$" || true)
+    edge_data="last_rebuilt_from: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"$'\n'"${edge_data}"
+    write_edge_index "$edge_data" "$base" "$current" || rebuild_edge_index >/dev/null
 }
 
 # ==========================================
