@@ -162,7 +162,7 @@ input[type=search]{padding:5px 9px;border:1px solid var(--line);border-radius:7p
 .seg button[aria-pressed="true"]{background:var(--active-bg);color:var(--active)}
 main{padding:16px;max-width:1100px;margin:0 auto}
 body.wide main{max-width:none}
-#wide{appearance:none;border:1px solid var(--line);background:var(--card2);color:var(--muted);
+#wide,#theme{appearance:none;border:1px solid var(--line);background:var(--card2);color:var(--muted);
   font:600 11px/1 inherit;font-family:inherit;padding:6px 9px;border-radius:7px;cursor:pointer}
 #wide[aria-pressed=true]{color:var(--ink);border-color:var(--active-line)}
 section.group,section.graphbox{margin-bottom:22px}
@@ -301,6 +301,15 @@ function setWide(on){document.body.classList.toggle('wide',on);WB.setAttribute('
 try{setWide(localStorage.getItem('gib-wide')==='1');}catch(e){}
 WB.addEventListener('click',()=>{const on=!document.body.classList.contains('wide');setWide(on);
   try{localStorage.setItem('gib-wide',on?'1':'0');}catch(e){}});
+const TB=document.getElementById('theme'),THEMES=['auto','light','dark'];
+function showTheme(){const t=document.documentElement.dataset.theme||'auto';TB.textContent=t[0].toUpperCase()+t.slice(1);}
+showTheme();
+TB.addEventListener('click',()=>{
+  const cur=document.documentElement.dataset.theme||'auto', next=THEMES[(THEMES.indexOf(cur)+1)%3];
+  if(next==='auto')delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme=next;
+  try{next==='auto'?localStorage.removeItem('gib-theme'):localStorage.setItem('gib-theme',next);}catch(e){}
+  showTheme();
+});
 // A "blocks #id" link can point at a card the current filter hides: widen
 // the filter to All and open the card rather than going nowhere.
 window.addEventListener('hashchange',()=>{
@@ -327,7 +336,10 @@ def render(issues, graph, sha, remote, clone):
     assignees = sorted({r["assignee"] for r in issues.values() if r["assignee"]})
     parts = [f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
              f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-             f"<title>{html.escape(remote.split('/')[-1])} issues</title><style>{CSS}</style></head><body>",
+             f"<title>{html.escape(remote.split('/')[-1])} issues</title><style>{CSS}</style>"
+             # In <head> so a stored light/dark choice applies before first paint.
+             "<script>try{const t=localStorage.getItem('gib-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>"
+             "</head><body>",
              f"<header><h1>{html.escape(remote.split('/')[-1])} issues</h1><span class='scope mono'>git-issue · {html.escape(remote)}</span>",
              f"<span class='counts'><span id='shown'>0</span> shown · {len(issues)} total · "
              + " · ".join(f"{counts[s]} {s.replace('_', ' ')}" for s in statuses if counts[s]) + "</span>",
@@ -338,7 +350,8 @@ def render(issues, graph, sha, remote, clone):
              + "</div><select id='asg'><option value=''>everyone</option>"
              + "".join(f"<option value='{html.escape(a)}'>{html.escape(a)}</option>" for a in assignees)
              + "</select><input id='q' type='search' placeholder='search title, body, id'>"
-             "<button id='wide' aria-pressed='false' title='toggle full width'>Full width</button></div></header><main>"]
+             "<button id='wide' aria-pressed='false' title='toggle full width'>Full width</button>"
+             "<button id='theme' title='theme: auto follows the system'>Auto</button></div></header><main>"]
     if graph:
         parts.append("<section class='graphbox'><h2>Dependencies <span class='n' style='font-weight:400'>solid = blocks · dashed = relates to · click a box</span></h2>"
                      f"<div id='graph'></div><script type='application/json' id='gdata'>{graph}</script></section>")
