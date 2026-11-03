@@ -22,7 +22,9 @@ What the page shows:
   filtered view is a link.
 - A dependency graph, as inline SVG, for the issues that take part in an edge:
   solid for `blocks` and `parent_of`, dashed for `relates_to`. Boxes link to
-  their cards, and the graph follows the filter.
+  their cards. The graph follows the filter and is laid out again for
+  whatever it leaves visible.
+- A full-width toggle for wide screens, remembered per browser.
 - Each card expands to the description, comments, author, dates and the
   `git issue show` line for it.
 - Light and dark follow the OS; the layout holds at 390 px.

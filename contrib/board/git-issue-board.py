@@ -97,79 +97,24 @@ def head_info(clone):
 # longest path over blocks/parent_of edges; relates_to is drawn dashed and does
 # not affect layering.
 
-def layout(issues):
+def graph_data(issues):
+    # The page lays the graph out itself (drawGraph in JS), so it can redo the
+    # layout for whatever the filter leaves visible. A layout fixed at
+    # generation time keeps empty columns where hidden issues sat.
     hard, soft = [], []
     for rec in issues.values():
-        for t in rec["blocks"]:
-            if t in issues:
-                hard.append((rec["id"], t))
-        for t in rec["parent_of"]:
+        for t in rec["blocks"] + rec["parent_of"]:
             if t in issues:
                 hard.append((rec["id"], t))
         for t in rec["relates_to"]:
             if t in issues and (t, rec["id"]) not in soft:
                 soft.append((rec["id"], t))
-    nodes = sorted({n for e in hard + soft for n in e}, key=lambda n: topo_key(issues[n]))
-    if not nodes:
+    ids = sorted({n for e in hard + soft for n in e}, key=lambda n: topo_key(issues[n]))
+    if not ids:
         return None
-    layer = {n: 0 for n in nodes}
-    for _ in range(len(nodes)):
-        changed = False
-        for a, b in hard:
-            if layer[b] < layer[a] + 1:
-                layer[b] = layer[a] + 1
-                changed = True
-        if not changed:
-            break
-    # Components side by side: relates_to pairs with no hard edges would
-    # otherwise all sit in layer 0 as one tall column.
-    cols = {}
-    for n in nodes:
-        cols.setdefault(layer[n], []).append(n)
-    W, H, GX, GY, PAD = 230, 44, 60, 16, 12
-    pos = {}
-    for l, ns in cols.items():
-        for i, n in enumerate(ns):
-            pos[n] = (PAD + l * (W + GX), PAD + i * (H + GY))
-    width = PAD * 2 + (max(cols) + 1) * W + max(cols) * GX
-    height = PAD * 2 + max(len(v) for v in cols.values()) * (H + GY) - GY
-    out = [f'<svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" role="img" aria-label="dependency graph">',
-           '<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
-           '<path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>']
-    def edge(a, b, dashed):
-        ax, ay = pos[a]; bx, by = pos[b]
-        x1, y1 = ax + W, ay + H / 2
-        x2, y2 = bx, by + H / 2
-        if bx == ax:  # same column: join the facing edges, straight down or up
-            x1 = x2 = ax + W / 2
-            if by > ay:
-                y1, y2 = ay + H, by
-            else:
-                y1, y2 = ay, by + H
-            d = f"M{x1},{y1} L{x2},{y2}"
-        elif bx < ax:  # backwards: loop under both boxes
-            x1, x2 = ax + W / 2, bx + W / 2
-            y1 = y2 = max(ay, by) + H
-            d = f"M{x1},{y1} C{x1},{y1 + 40} {x2},{y2 + 40} {x2},{y2}"
-        else:
-            mx = (x1 + x2) / 2
-            d = f"M{x1},{y1} C{mx},{y1} {mx},{y2} {x2},{y2}"
-        cls = "edge soft" if dashed else "edge"
-        out.append(f'<path class="{cls}" data-a="{a}" data-b="{b}" d="{d}" marker-end="url(#arr)"/>')
-    for a, b in hard:
-        edge(a, b, False)
-    for a, b in soft:
-        edge(a, b, True)
-    for n in nodes:
-        x, y = pos[n]
-        rec = issues[n]
-        t = html.escape(rec["title"])
-        short = t if len(t) <= 34 else html.escape(rec["title"][:33]) + "…"
-        out.append(f'<a href="#i-{n}" class="node st-{rec["status"]}" data-id="{n}"><rect x="{x}" y="{y}" width="{W}" height="{H}" rx="7"/>'
-                   f'<text x="{x + 10}" y="{y + 18}" class="nid">#{n}</text>'
-                   f'<text x="{x + 10}" y="{y + 34}" class="ntitle">{short}</text><title>{t}</title></a>')
-    out.append("</svg>")
-    return "\n".join(out)
+    nodes = [{"id": n, "title": issues[n]["title"], "status": issues[n]["status"]} for n in ids]
+    # "</" inside a <script> element would end it early.
+    return json.dumps({"nodes": nodes, "hard": hard, "soft": soft}).replace("</", "<\\/")
 
 
 # --- page ----------------------------------------------------------------------
@@ -216,6 +161,10 @@ input[type=search]{padding:5px 9px;border:1px solid var(--line);border-radius:7p
   font-family:inherit;padding:5px 8px;border-radius:6px;cursor:pointer}
 .seg button[aria-pressed="true"]{background:var(--active-bg);color:var(--active)}
 main{padding:16px;max-width:1100px;margin:0 auto}
+body.wide main{max-width:none}
+#wide{appearance:none;border:1px solid var(--line);background:var(--card2);color:var(--muted);
+  font:600 11px/1 inherit;font-family:inherit;padding:6px 9px;border-radius:7px;cursor:pointer}
+#wide[aria-pressed=true]{color:var(--ink);border-color:var(--active-line)}
 section.group,section.graphbox{margin-bottom:22px}
 section.group h2,section.graphbox h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:0 0 8px;
   display:flex;gap:8px;align-items:center}
@@ -244,7 +193,7 @@ section.group h2 .n{color:var(--muted);font-weight:500}
 .body a{color:var(--active);text-decoration:none}
 .comments{margin-top:8px;padding:8px 10px;background:var(--card2);border-radius:7px;font-size:13px;white-space:pre-wrap}
 .issue:target{outline:2px solid var(--active);outline-offset:1px}
-.issue.hide,#graph .hide{display:none}
+.issue.hide{display:none}
 #graph{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:12px;overflow:auto;margin-bottom:22px}
 #graph svg{display:block;max-width:none}
 #graph .edge{fill:none;stroke:var(--block);stroke-width:1.6;color:var(--block)}
@@ -263,6 +212,59 @@ footer code{font-size:11px}
 JS = """
 const Q=document.getElementById('q'),SEG=document.getElementById('seg'),A=document.getElementById('asg');
 let status='active',asg='';
+const GD=document.getElementById('gdata'),G=GD&&JSON.parse(GD.textContent);
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
+// Only issues that take part in a visible edge are drawn; a 40-node graph
+// with five edges is a list with a picture attached, not a picture. Layers
+// come from the longest path over blocks/parent_of edges; relates_to is
+// drawn dashed and does not affect layering. Within a layer, topo order.
+function drawGraph(vis){
+  if(!G)return;
+  const box=document.querySelector('.graphbox');
+  const hard=G.hard.filter(([a,b])=>vis.has(a)&&vis.has(b)), soft=G.soft.filter(([a,b])=>vis.has(a)&&vis.has(b));
+  const used=new Set([...hard,...soft].flat()), nodes=G.nodes.filter(n=>used.has(n.id));
+  box.style.display=nodes.length?'':'none';
+  if(!nodes.length)return;
+  const layer={}; nodes.forEach(n=>layer[n.id]=0);
+  for(let i=0;i<nodes.length;i++){
+    let changed=false;
+    for(const [a,b] of hard)if(layer[b]<layer[a]+1){layer[b]=layer[a]+1;changed=true;}
+    if(!changed)break;
+  }
+  const cols=[]; nodes.forEach(n=>(cols[layer[n.id]]=cols[layer[n.id]]||[]).push(n));
+  const W=230,H=44,GX=60,GY=16,PAD=12,pos={};
+  cols.forEach((ns,l)=>ns.forEach((n,i)=>pos[n.id]=[PAD+l*(W+GX),PAD+i*(H+GY)]));
+  const width=PAD*2+cols.length*W+(cols.length-1)*GX;
+  const height=PAD*2+Math.max(...cols.map(c=>c?c.length:0))*(H+GY)-GY;
+  const out=[`<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="dependency graph">`,
+    '<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+    +'<path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>'];
+  const edge=(a,b,dashed)=>{
+    const [ax,ay]=pos[a],[bx,by]=pos[b];
+    let x1=ax+W,y1=ay+H/2,x2=bx,y2=by+H/2,d;
+    if(bx===ax){  // same column: join the facing edges, straight down or up
+      x1=x2=ax+W/2;
+      if(by>ay){y1=ay+H;y2=by;}else{y1=ay;y2=by+H;}
+      d=`M${x1},${y1} L${x2},${y2}`;
+    }else if(bx<ax){  // backwards: loop under both boxes
+      x1=ax+W/2;x2=bx+W/2;y1=y2=Math.max(ay,by)+H;
+      d=`M${x1},${y1} C${x1},${y1+40} ${x2},${y2+40} ${x2},${y2}`;
+    }else{
+      const mx=(x1+x2)/2;
+      d=`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+    }
+    out.push(`<path class="${dashed?'edge soft':'edge'}" d="${d}" marker-end="url(#arr)"/>`);
+  };
+  hard.forEach(([a,b])=>edge(a,b,false)); soft.forEach(([a,b])=>edge(a,b,true));
+  for(const n of nodes){
+    const [x,y]=pos[n.id], t=esc(n.title), short=n.title.length<=34?t:esc(n.title.slice(0,33))+'…';
+    out.push(`<a href="#i-${n.id}" class="node st-${n.status}"><rect x="${x}" y="${y}" width="${W}" height="${H}" rx="7"/>`
+      +`<text x="${x+10}" y="${y+18}" class="nid">#${n.id}</text>`
+      +`<text x="${x+10}" y="${y+34}" class="ntitle">${short}</text><title>${t}</title></a>`);
+  }
+  out.push('</svg>');
+  document.getElementById('graph').innerHTML=out.join('\\n');
+}
 function apply(){
   const q=Q.value.trim().toLowerCase();
   let shown=0;
@@ -279,14 +281,7 @@ function apply(){
   });
   // The graph shows exactly the issues whose cards are showing, so a box
   // never links to a hidden card.
-  const vis=new Set([...document.querySelectorAll('.issue:not(.hide)')].map(e=>e.id.slice(2)));
-  const box=document.querySelector('.graphbox');
-  if(box){
-    let nodes=0;
-    box.querySelectorAll('a.node').forEach(n=>{const ok=vis.has(n.dataset.id);n.classList.toggle('hide',!ok);if(ok)nodes++;});
-    box.querySelectorAll('path.edge').forEach(p=>p.classList.toggle('hide',!(vis.has(p.dataset.a)&&vis.has(p.dataset.b))));
-    box.style.display=nodes?'':'none';
-  }
+  drawGraph(new Set([...document.querySelectorAll('.issue:not(.hide)')].map(e=>e.id.slice(2))));
   document.getElementById('shown').textContent=shown;
   SEG.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===status));
   const h=new URLSearchParams(); if(status!=='active')h.set('status',status); if(q)h.set('q',q); if(asg)h.set('asg',asg);
@@ -298,6 +293,14 @@ Q.addEventListener('input',apply); A.addEventListener('change',()=>{asg=A.value;
   if(h.get('status'))status=h.get('status'); if(h.get('q'))Q.value=h.get('q'); if(h.get('asg')){asg=h.get('asg');A.value=asg;}
   if(location.hash.startsWith('#i-')){status='all';}
   apply();})();
+// Width is a per-viewer preference, not part of a shareable view, so it
+// lives in localStorage rather than the hash. Storage can throw (private
+// windows, file:// in some browsers); the toggle still works for the visit.
+const WB=document.getElementById('wide');
+function setWide(on){document.body.classList.toggle('wide',on);WB.setAttribute('aria-pressed',on);}
+try{setWide(localStorage.getItem('gib-wide')==='1');}catch(e){}
+WB.addEventListener('click',()=>{const on=!document.body.classList.contains('wide');setWide(on);
+  try{localStorage.setItem('gib-wide',on?'1':'0');}catch(e){}});
 // A "blocks #id" link can point at a card the current filter hides: widen
 // the filter to All and open the card rather than going nowhere.
 window.addEventListener('hashchange',()=>{
@@ -334,10 +337,11 @@ def render(issues, graph, sha, remote, clone):
                         ("open", "Open"), ("deferred", "Deferred"), ("closed", "Closed"), ("all", "All")])
              + "</div><select id='asg'><option value=''>everyone</option>"
              + "".join(f"<option value='{html.escape(a)}'>{html.escape(a)}</option>" for a in assignees)
-             + "</select><input id='q' type='search' placeholder='search title, body, id'></div></header><main>"]
+             + "</select><input id='q' type='search' placeholder='search title, body, id'>"
+             "<button id='wide' aria-pressed='false' title='toggle full width'>Full width</button></div></header><main>"]
     if graph:
         parts.append("<section class='graphbox'><h2>Dependencies <span class='n' style='font-weight:400'>solid = blocks · dashed = relates to · click a box</span></h2>"
-                     f"<div id='graph'>{graph}</div></section>")
+                     f"<div id='graph'></div><script type='application/json' id='gdata'>{graph}</script></section>")
     def link_ids(ids):
         return ", ".join(f"<a href='#i-{i}'>#{i}</a>" for i in ids)
     for st in statuses:
@@ -385,7 +389,7 @@ def main():
     if not issues:
         sys.exit(f"git-issue-board: no issues in {clone} (git fetch origin 'refs/notes/issue-*:refs/notes/issue-*' first?)")
     sha, remote = head_info(clone)
-    page = render(issues, layout(issues), sha, remote, clone)
+    page = render(issues, graph_data(issues), sha, remote, clone)
     if os.path.dirname(a.out):
         os.makedirs(os.path.dirname(a.out), exist_ok=True)
     with open(a.out, "w") as f:
