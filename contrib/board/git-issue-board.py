@@ -35,6 +35,10 @@ STATUS_ORDER = ["in_progress", "review", "blocked", "open", "deferred", "closed"
 PRIO_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
+def topo_key(rec):
+    return (rec.get("topo", float("inf")), PRIO_RANK.get(rec["priority"], 9), rec["title"].lower())
+
+
 def gi(clone, *args):
     out = subprocess.run(["git", "-C", clone, "issue", *args], capture_output=True,
                          text=True, env={**os.environ, "GIT_ISSUE_NO_HEADER": "1"})
@@ -51,6 +55,12 @@ def read_issues(clone):
         for k in ("blocks", "depends_on", "parent_of", "relates_to"):
             rec[k] = [x for x in rec[k].split(",") if x]
         issues[rec["id"]] = rec
+    # Dependency order comes from the tool's own `topo` rather than being
+    # re-derived here. topo leaves closed issues out; they sort after it.
+    for i, line in enumerate(gi(clone, "--porcelain", "topo").splitlines()):
+        parts = line.split("\t")
+        if len(parts) == len(COLS) and parts[1] in issues:
+            issues[parts[1]]["topo"] = i
     # One export per id: in 1.0.0-rc6 `export` with no ids prints nothing (#3).
     # show carries the comments, export the clean fields.
     for iid, rec in issues.items():
@@ -99,7 +109,7 @@ def layout(issues):
         for t in rec["relates_to"]:
             if t in issues and (t, rec["id"]) not in soft:
                 soft.append((rec["id"], t))
-    nodes = sorted({n for e in hard + soft for n in e})
+    nodes = sorted({n for e in hard + soft for n in e}, key=lambda n: topo_key(issues[n]))
     if not nodes:
         return None
     layer = {n: 0 for n in nodes}
@@ -119,7 +129,7 @@ def layout(issues):
     W, H, GX, GY, PAD = 230, 44, 60, 16, 12
     pos = {}
     for l, ns in cols.items():
-        for i, n in enumerate(sorted(ns, key=lambda x: issues[x]["title"])):
+        for i, n in enumerate(ns):
             pos[n] = (PAD + l * (W + GX), PAD + i * (H + GY))
     width = PAD * 2 + (max(cols) + 1) * W + max(cols) * GX
     height = PAD * 2 + max(len(v) for v in cols.values()) * (H + GY) - GY
@@ -145,7 +155,7 @@ def layout(issues):
             mx = (x1 + x2) / 2
             d = f"M{x1},{y1} C{mx},{y1} {mx},{y2} {x2},{y2}"
         cls = "edge soft" if dashed else "edge"
-        out.append(f'<path class="{cls}" d="{d}" marker-end="url(#arr)"/>')
+        out.append(f'<path class="{cls}" data-a="{a}" data-b="{b}" d="{d}" marker-end="url(#arr)"/>')
     for a, b in hard:
         edge(a, b, False)
     for a, b in soft:
@@ -155,7 +165,7 @@ def layout(issues):
         rec = issues[n]
         t = html.escape(rec["title"])
         short = t if len(t) <= 34 else html.escape(rec["title"][:33]) + "…"
-        out.append(f'<a href="#i-{n}" class="node st-{rec["status"]}"><rect x="{x}" y="{y}" width="{W}" height="{H}" rx="7"/>'
+        out.append(f'<a href="#i-{n}" class="node st-{rec["status"]}" data-id="{n}"><rect x="{x}" y="{y}" width="{W}" height="{H}" rx="7"/>'
                    f'<text x="{x + 10}" y="{y + 18}" class="nid">#{n}</text>'
                    f'<text x="{x + 10}" y="{y + 34}" class="ntitle">{short}</text><title>{t}</title></a>')
     out.append("</svg>")
@@ -234,7 +244,7 @@ section.group h2 .n{color:var(--muted);font-weight:500}
 .body a{color:var(--active);text-decoration:none}
 .comments{margin-top:8px;padding:8px 10px;background:var(--card2);border-radius:7px;font-size:13px;white-space:pre-wrap}
 .issue:target{outline:2px solid var(--active);outline-offset:1px}
-.issue.hide{display:none}
+.issue.hide,#graph .hide{display:none}
 #graph{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:12px;overflow:auto;margin-bottom:22px}
 #graph svg{display:block;max-width:none}
 #graph .edge{fill:none;stroke:var(--block);stroke-width:1.6;color:var(--block)}
@@ -267,6 +277,16 @@ function apply(){
     const n=g.querySelectorAll('.issue:not(.hide)').length;
     g.style.display=n?'':'none'; g.querySelector('.n').textContent=n;
   });
+  // The graph shows exactly the issues whose cards are showing, so a box
+  // never links to a hidden card.
+  const vis=new Set([...document.querySelectorAll('.issue:not(.hide)')].map(e=>e.id.slice(2)));
+  const box=document.querySelector('.graphbox');
+  if(box){
+    let nodes=0;
+    box.querySelectorAll('a.node').forEach(n=>{const ok=vis.has(n.dataset.id);n.classList.toggle('hide',!ok);if(ok)nodes++;});
+    box.querySelectorAll('path.edge').forEach(p=>p.classList.toggle('hide',!(vis.has(p.dataset.a)&&vis.has(p.dataset.b))));
+    box.style.display=nodes?'':'none';
+  }
   document.getElementById('shown').textContent=shown;
   SEG.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===status));
   const h=new URLSearchParams(); if(status!=='active')h.set('status',status); if(q)h.set('q',q); if(asg)h.set('asg',asg);
@@ -278,6 +298,15 @@ Q.addEventListener('input',apply); A.addEventListener('change',()=>{asg=A.value;
   if(h.get('status'))status=h.get('status'); if(h.get('q'))Q.value=h.get('q'); if(h.get('asg')){asg=h.get('asg');A.value=asg;}
   if(location.hash.startsWith('#i-')){status='all';}
   apply();})();
+// A "blocks #id" link can point at a card the current filter hides: widen
+// the filter to All and open the card rather than going nowhere.
+window.addEventListener('hashchange',()=>{
+  if(!location.hash.startsWith('#i-'))return;
+  const el=document.getElementById(location.hash.slice(1));
+  if(!el)return;
+  if(el.classList.contains('hide')){status='all';asg='';A.value='';Q.value='';apply();}
+  el.open=true; el.scrollIntoView();
+});
 """
 
 
@@ -288,17 +317,20 @@ def short_name(s):
 
 def render(issues, graph, sha, remote, clone):
     now = dt.datetime.now(dt.timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
-    counts = {s: sum(1 for r in issues.values() if r["status"] == s) for s in STATUS_ORDER}
+    # A status outside STATUS_ORDER still gets a group, last, rather than its
+    # issues vanishing from the page.
+    statuses = STATUS_ORDER + sorted({r["status"] for r in issues.values()} - set(STATUS_ORDER))
+    counts = {s: sum(1 for r in issues.values() if r["status"] == s) for s in statuses}
     assignees = sorted({r["assignee"] for r in issues.values() if r["assignee"]})
     parts = [f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
              f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
              f"<title>{html.escape(remote.split('/')[-1])} issues</title><style>{CSS}</style></head><body>",
              f"<header><h1>{html.escape(remote.split('/')[-1])} issues</h1><span class='scope mono'>git-issue · {html.escape(remote)}</span>",
              f"<span class='counts'><span id='shown'>0</span> shown · {len(issues)} total · "
-             + " · ".join(f"{counts[s]} {s.replace('_', ' ')}" for s in STATUS_ORDER if counts[s]) + "</span>",
+             + " · ".join(f"{counts[s]} {s.replace('_', ' ')}" for s in statuses if counts[s]) + "</span>",
              "<div class='controls'><div class='seg' id='seg'>"
              + "".join(f"<button data-v='{v}' aria-pressed='false'>{l}</button>" for v, l in
-                       [("active", "Active"), ("in_progress", "In progress"), ("blocked", "Blocked"),
+                       [("active", "Active"), ("in_progress", "In progress"), ("review", "Review"), ("blocked", "Blocked"),
                         ("open", "Open"), ("deferred", "Deferred"), ("closed", "Closed"), ("all", "All")])
              + "</div><select id='asg'><option value=''>everyone</option>"
              + "".join(f"<option value='{html.escape(a)}'>{html.escape(a)}</option>" for a in assignees)
@@ -308,11 +340,11 @@ def render(issues, graph, sha, remote, clone):
                      f"<div id='graph'>{graph}</div></section>")
     def link_ids(ids):
         return ", ".join(f"<a href='#i-{i}'>#{i}</a>" for i in ids)
-    for st in STATUS_ORDER:
+    for st in statuses:
         rows = [r for r in issues.values() if r["status"] == st]
         if not rows:
             continue
-        rows.sort(key=lambda r: (PRIO_RANK.get(r["priority"], 9), r["title"].lower()))
+        rows.sort(key=topo_key)
         parts.append(f"<section class='group' data-status='{st}'><h2>{st.replace('_', ' ')} <span class='n'>{len(rows)}</span></h2>")
         for r in rows:
             text = html.escape(" ".join([r["id"], r["title"], r["description"], r["comments"], r["assignee"]]).lower(), quote=True)

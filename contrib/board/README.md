@@ -15,13 +15,14 @@ Python 3.8 or later, standard library only; it shells out to `git issue
 What the page shows:
 
 - Issues grouped by status in working order: in progress, review, blocked,
-  open, deferred, closed. Priority first within a group.
+  open, deferred, closed. Within a group, issues follow `git issue topo`
+  order; closed issues, which topo leaves out, follow by priority.
 - A segmented filter (Active hides closed), an assignee dropdown and a search
   over id, title, body and comments. The state lives in the URL hash, so a
   filtered view is a link.
 - A dependency graph, as inline SVG, for the issues that take part in an edge:
   solid for `blocks` and `parent_of`, dashed for `relates_to`. Boxes link to
-  their cards.
+  their cards, and the graph follows the filter.
 - Each card expands to the description, comments, author, dates and the
   `git issue show` line for it.
 - Light and dark follow the OS; the layout holds at 390 px.
