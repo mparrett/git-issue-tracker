@@ -198,6 +198,9 @@ section.group h2 .n{color:var(--muted);font-weight:500}
 #graph svg{display:block;max-width:none}
 #graph .edge{fill:none;stroke:var(--block);stroke-width:1.6;color:var(--block)}
 #graph .edge.soft{stroke:var(--muted);stroke-dasharray:5 4;color:var(--muted)}
+#graph .edge.head{stroke:none}
+#graph #arr path{fill:var(--block)}
+#graph #arr-soft path{fill:var(--muted)}
 #graph .node rect{fill:var(--card2);stroke:var(--line);stroke-width:1.2}
 #graph .node.st-in_progress rect{stroke:var(--active-line);fill:var(--active-bg)}
 #graph .node.st-blocked rect{stroke:var(--block);fill:var(--block-bg)}
@@ -237,8 +240,10 @@ function drawGraph(vis){
   const width=PAD*2+cols.length*W+(cols.length-1)*GX;
   const height=PAD*2+Math.max(...cols.map(c=>c?c.length:0))*(H+GY)-GY;
   const out=[`<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="dependency graph">`,
-    '<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
-    +'<path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>'];
+    // One marker per edge style: a marker takes its colour from where it is
+    // defined, not from the line that uses it.
+    '<defs>'+['arr','arr-soft'].map(id=>`<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">`
+    +'<path d="M0 0L10 5L0 10z"/></marker>').join('')+'</defs>'];
   const edge=(a,b,dashed)=>{
     const [ax,ay]=pos[a],[bx,by]=pos[b];
     let x1=ax+W,y1=ay+H/2,x2=bx,y2=by+H/2,d;
@@ -253,9 +258,15 @@ function drawGraph(vis){
       const mx=(x1+x2)/2;
       d=`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
     }
-    out.push(`<path class="${dashed?'edge soft':'edge'}" d="${d}" marker-end="url(#arr)"/>`);
+    const cls=dashed?'edge soft':'edge';
+    out.push(`<path class="${cls}" d="${d}"/>`);
+    heads.push(`<path class="${cls} head" d="${d}" marker-end="url(#${dashed?'arr-soft':'arr'})"/>`);
   };
+  // Arrowheads go in a second pass over every line, so where edges converge
+  // on one box a later line is not painted across an earlier arrowhead.
+  const heads=[];
   hard.forEach(([a,b])=>edge(a,b,false)); soft.forEach(([a,b])=>edge(a,b,true));
+  out.push(...heads);
   for(const n of nodes){
     const [x,y]=pos[n.id], t=esc(n.title), short=n.title.length<=34?t:esc(n.title.slice(0,33))+'…';
     out.push(`<a href="#i-${n.id}" class="node st-${n.status}"><rect x="${x}" y="${y}" width="${W}" height="${H}" rx="7"/>`
