@@ -19,8 +19,7 @@ What the page shows:
   order; closed issues, which topo leaves out, follow by priority.
 - A segmented filter (Active hides closed), an assignee dropdown and a search
   over id, title, body and comments. The state lives in the URL hash, so a
-  filtered view is a link; opened without a hash, the page restores your
-  last filter.
+  filtered view is a link.
 - A dependency graph, as inline SVG, for the issues that take part in an edge:
   solid for `blocks` and `parent_of`, dashed for `relates_to`. Boxes link to
   their cards. The graph follows the filter and is laid out again for
