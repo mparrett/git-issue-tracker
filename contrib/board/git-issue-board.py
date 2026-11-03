@@ -286,10 +286,14 @@ function apply(){
   SEG.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===status));
   const h=new URLSearchParams(); if(status!=='active')h.set('status',status); if(q)h.set('q',q); if(asg)h.set('asg',asg);
   history.replaceState(null,'',h.toString()?'#'+h:location.pathname);
+  try{localStorage.setItem('gib-view',h.toString());}catch(e){}
 }
 SEG.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;status=b.dataset.v;apply();});
 Q.addEventListener('input',apply); A.addEventListener('change',()=>{asg=A.value;apply();});
-(function(){const h=new URLSearchParams(location.hash.slice(1));
+// A hash in the URL is a shared view and wins; with none, reopen the
+// viewer's last filter.
+(function(){let saved='';try{saved=localStorage.getItem('gib-view')||'';}catch(e){}
+  const h=new URLSearchParams(location.hash.length>1?location.hash.slice(1):saved);
   if(h.get('status'))status=h.get('status'); if(h.get('q'))Q.value=h.get('q'); if(h.get('asg')){asg=h.get('asg');A.value=asg;}
   if(location.hash.startsWith('#i-')){status='all';}
   apply();})();
